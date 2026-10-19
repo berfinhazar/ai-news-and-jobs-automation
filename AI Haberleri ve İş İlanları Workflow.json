@@ -1,0 +1,605 @@
+{
+  "name": "AI Haberleri ve İş İlanları Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "c0b76ce5-4322-4fa2-911a-2dfa113f658e",
+      "name": "Daily 08:00 Istanbul",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "FWEL3sJdldWXUbN2",
+          "cachedResultName": "ai_digest_sent_items"
+        },
+        "limit": 3000,
+        "orderBy": true
+      },
+      "id": "4abc90df-96d2-4f84-b497-98ea061d41c4",
+      "name": "Load Sent History",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        224,
+        96
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "id": "5fef659a-c8bc-4364-9654-b0a6d120b677",
+      "name": "Manual Test Run",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "feeds = [\n    {\"source\": \"OpenAI\", \"url\": \"https://openai.com/news/rss.xml\"},\n    {\"source\": \"Google DeepMind\", \"url\": \"https://deepmind.google/blog/rss.xml\"},\n    {\"source\": \"Google AI Blog\", \"url\": \"https://blog.google/technology/ai/rss/\"},\n    {\"source\": \"Hugging Face\", \"url\": \"https://huggingface.co/blog/feed.xml\"},\n    {\"source\": \"arXiv cs.AI\", \"url\": \"https://rss.arxiv.org/rss/cs.AI\"},\n]\n\nreturn [{\"json\": {\"source\": f[\"source\"], \"url\": f[\"url\"]}} for f in feeds]"
+      },
+      "id": "ba31be69-fb84-43ec-86b1-7f45253bbf91",
+      "name": "News Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {}
+      },
+      "id": "ad7b70ed-2206-4d7e-b7f8-7d399916e13a",
+      "name": "Read AI News Feeds",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.2,
+      "position": [
+        720,
+        128
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "H = 3600 * 1000\nTR_OFFSET_MS = 3 * H  # Istanbul UTC+3 (DST yok)\n\nMONTHS = [\"jan\", \"feb\", \"mar\", \"apr\", \"may\", \"jun\", \"jul\", \"aug\", \"sep\", \"oct\", \"nov\", \"dec\"]\nARXIV_KW = [\"llm\", \"language model\", \"agent\", \"agentic\", \"rag\", \"retrieval\", \"multimodal\", \"vision\",\n            \"diffusion\", \"transformer\", \"reasoning\", \"benchmark\", \"fine-tun\", \"instruction\", \"alignment\",\n            \"safety\", \"speech\", \"vector\", \"tool use\", \"planning\", \"embedding\"]\n\n\ndef days_from_civil(y, m, d):\n    if m <= 2:\n        y -= 1\n    era = (y if y >= 0 else y - 399) // 400\n    yoe = y - era * 400\n    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1\n    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy\n    return era * 146097 + doe - 719468\n\n\ndef civil_from_days(z):\n    z += 719468\n    era = (z if z >= 0 else z - 146096) // 146097\n    doe = z - era * 146097\n    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365\n    y = yoe + era * 400\n    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)\n    mp = (5 * doy + 2) // 153\n    d = doy - (153 * mp + 2) // 5 + 1\n    m = mp + (3 if mp < 10 else -9)\n    if m <= 2:\n        y += 1\n    return y, m, d\n\n\ndef fmt_istanbul(ms):\n    t = int(ms // 1000) + TR_OFFSET_MS // 1000\n    y, m, d = civil_from_days(t // 86400)\n    sec = t % 86400\n    return \"%04d-%02d-%02d %02d:%02d\" % (y, m, d, sec // 3600, (sec % 3600) // 60)\n\n\ndef offset_minutes(z):\n    z = z.strip()\n    if not z or z.upper() in (\"Z\", \"GMT\", \"UT\", \"UTC\"):\n        return 0\n    if z[0] in \"+-\":\n        digits = z[1:].replace(\":\", \"\")\n        mins = int(digits[0:2]) * 60 + (int(digits[2:4]) if len(digits) >= 4 else 0)\n        return -mins if z[0] == \"-\" else mins\n    return 0\n\n\ndef parse_iso(s):\n    y, m, d = int(s[0:4]), int(s[5:7]), int(s[8:10])\n    hh = int(s[11:13]) if len(s) >= 13 else 0\n    mm = int(s[14:16]) if len(s) >= 16 else 0\n    ss = int(s[17:19]) if (len(s) >= 19 and s[16] == \":\") else 0\n    tail = s[19:] if len(s) > 19 else \"\"\n    pos = max(tail.rfind(\"+\"), tail.rfind(\"-\"))\n    off = offset_minutes(tail[pos:]) if pos >= 0 else 0\n    return (days_from_civil(y, m, d) * 86400 + hh * 3600 + mm * 60 + ss - off * 60) * 1000\n\n\ndef parse_rfc822(s):\n    parts = s.replace(\",\", \" \").split()\n    if parts and not parts[0][0].isdigit():\n        parts = parts[1:]\n    d = int(parts[0])\n    m = MONTHS.index(parts[1][:3].lower()) + 1\n    y = int(parts[2])\n    hh = mm = ss = 0\n    if len(parts) > 3:\n        tp = parts[3].split(\":\")\n        hh = int(tp[0])\n        mm = int(tp[1]) if len(tp) > 1 else 0\n        ss = int(tp[2]) if len(tp) > 2 else 0\n    off = offset_minutes(parts[4]) if len(parts) > 4 else 0\n    return (days_from_civil(y, m, d) * 86400 + hh * 3600 + mm * 60 + ss - off * 60) * 1000\n\n\ndef parse_ms(s):\n    s = str(s or \"\").strip()\n    if not s:\n        return None\n    try:\n        if len(s) >= 10 and s[:4].isdigit() and s[4] == \"-\":\n            return parse_iso(s)\n        return parse_rfc822(s)\n    except Exception:\n        return None\n\n\ndef norm_link(u):\n    s = str(u or \"\").lower()\n    if s.startswith(\"https://\"):\n        s = s[8:]\n    elif s.startswith(\"http://\"):\n        s = s[7:]\n    if s.startswith(\"www.\"):\n        s = s[4:]\n    s = s.split(\"#\")[0].split(\"?\")[0]\n    return s.rstrip(\"/\")\n\n\ndef norm_title(t):\n    out = []\n    for ch in str(t or \"\").lower():\n        out.append(ch if (\"a\" <= ch <= \"z\" or \"0\" <= ch <= \"9\") else \" \")\n    return \" \".join(\"\".join(out).split())\n\n\ndef strip(s):\n    out = []\n    in_tag = False\n    for ch in str(s or \"\"):\n        if ch == \"<\":\n            in_tag = True\n            out.append(\" \")\n        elif ch == \">\" and in_tag:\n            in_tag = False\n        elif not in_tag:\n            out.append(ch)\n    return \" \".join(\"\".join(out).split())\n\n\ndef source_of(link):\n    if \"arxiv.org\" in link:\n        return \"arXiv cs.AI\"\n    if \"openai.com\" in link:\n        return \"OpenAI\"\n    if \"deepmind\" in link:\n        return \"Google DeepMind\"\n    if \"huggingface.co\" in link:\n        return \"Hugging Face\"\n    if \"blog.google\" in link:\n        return \"Google AI Blog\"\n    return \"Diger\"\n\n\ndef clean_arxiv_snippet(s):\n    if s[:6].lower() == \"arxiv:\":\n        idx = s.lower().find(\"abstract:\")\n        if 0 <= idx < 100:\n            return s[idx + 9:].lstrip()\n    return s\n\n\nrows = [it[\"json\"] for it in _items]\n\nnow_ms = None\nrun_date = None\nsent_raw = \"\"\nfor j in rows:\n    if j.get(\"nowMs\") is not None:\n        now_ms = j.get(\"nowMs\")\n        run_date = j.get(\"runDate\")\n        sent_raw = j.get(\"sentKeys\") or \"\"\n        break\ntry:\n    now_ms = float(now_ms)\nexcept Exception:\n    now_ms = None\nsent = set(k for k in str(sent_raw).split(\"\\n\") if k)\n\nsource_errors = []\nok_sources = set()\nseen_links = set()\nseen_titles = set()\nall_items = []\nfetched = 0\n\nfor j in rows:\n    if j.get(\"error\"):\n        err = j[\"error\"]\n        msg = err.get(\"message\") if isinstance(err, dict) and err.get(\"message\") else err\n        source_errors.append(\"RSS: \" + str(msg)[:120])\n        continue\n    if not j.get(\"title\") or not j.get(\"link\"):\n        continue\n    fetched += 1\n    link = str(j[\"link\"])\n    source = source_of(link)\n    ok_sources.add(source)\n    snippet_raw = strip(j.get(\"contentSnippet\") or j.get(\"content\") or j.get(\"summary\") or \"\")\n    if source == \"arXiv cs.AI\":\n        low = snippet_raw.lower().replace(\"announce type: \", \"announce type:\")\n        if (\"announce type:replace\" in low or \"announce type:cross-list\" in low) and \"announce type:new\" not in low:\n            continue\n        hay = (str(j[\"title\"]) + \" \" + snippet_raw[:400]).lower()\n        if not any(k in hay for k in ARXIV_KW):\n            continue\n    ms = parse_ms(j.get(\"isoDate\") or j.get(\"pubDate\") or \"\")\n    all_items.append((j, link, source, snippet_raw, ms))\n\nif now_ms is None:\n    dated = [x[4] for x in all_items if x[4] is not None]\n    now_ms = max(dated) if dated else 0\nif not run_date:\n    run_date = fmt_istanbul(now_ms)[:10]\n\ncands = []\nfor j, link, source, snippet_raw, ms in all_items:\n    has_date = ms is not None\n    age_h = (now_ms - ms) / H if has_date else None\n    if has_date and age_h > 24 * 7:\n        continue\n    key = norm_link(link)\n    t_key = norm_title(j[\"title\"])\n    if key in sent or key in seen_links or t_key in seen_titles:\n        continue\n    seen_links.add(key)\n    seen_titles.add(t_key)\n    snippet = clean_arxiv_snippet(snippet_raw) if source == \"arXiv cs.AI\" else snippet_raw\n    cands.append({\n        \"source\": source,\n        \"title\": strip(j[\"title\"]),\n        \"link\": link,\n        \"key\": key,\n        \"ms\": ms if has_date else 0,\n        \"published\": fmt_istanbul(ms) if has_date else \"Tarih dogrulanamadi\",\n        \"ageHours\": int((age_h + 0.5) // 1) if has_date else None,\n        \"snippet\": snippet[:600],\n    })\n\ncands.sort(key=lambda x: -x[\"ms\"])\nwindow_used = \"72 saat\"\npool = [x for x in cands if x[\"ageHours\"] is not None and x[\"ageHours\"] <= 72]\nif len(pool) < 5:\n    pool = [x for x in cands if x[\"ageHours\"] is None or x[\"ageHours\"] <= 24 * 7]\n    window_used = \"7 gun\"\narxiv = [x for x in pool if x[\"source\"] == \"arXiv cs.AI\"][:10]\nothers = [x for x in pool if x[\"source\"] != \"arXiv cs.AI\"][:25]\nitems = [{\"id\": \"N\" + str(i + 1), **x} for i, x in enumerate(others + arxiv)]\n\nreturn [{\"json\": {\n    \"runDate\": run_date,\n    \"windowUsed\": window_used,\n    \"fetchedCount\": fetched,\n    \"items\": items,\n    \"okSources\": list(ok_sources),\n    \"sourceErrors\": source_errors,\n}}]"
+      },
+      "id": "3d9ba279-6770-410c-b83e-13d3dc80ec35",
+      "name": "Prepare News",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        944,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5.4-mini",
+          "cachedResultName": "GPT-5.4-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Sen teknik bir yapay zeka editorusun. Sana RSS kaynaklarindan gelen aday haberler JSON olarak verilecek (id, source, title, link, published, ageHours, snippet). Gorevin: 1) En onemli ve teknik acidan ogretici 5-10 haberi sec (AI/ML/DL, GenAI, LLM, AI Agents, Agentic AI, otomasyon, RAG, vector DB, CV, NLP, multimodal, yeni modeller, makaleler, acik kaynak, buyuk sirket duyurulari). Yeterli onemli haber yoksa daha az sec; asla uydurma. 2) Ayni gelismeyi anlatan haberleri birlestir: birini id olarak sec, digerlerini merged_ids icine yaz. 3) Her secilen haber icin YALNIZCA verilen title ve snippet bilgisine dayanarak Turkce yaz: title_tr (kisa Turkce baslik), summary_tr (1-2 cumle), why_important (1 cumle, teknik onemi), use_case (pratik kullanim alani; snippet yetersizse \"Kaynakta ayrinti yok\"), category (ornek: LLM, Agents, Arastirma, CV, Acik Kaynak, Sirket Duyurusu), importance (1-10). Snippet bos veya cok kisaysa ayrintili ozet uretme; \"Kaynakta yalnizca baslik mevcut, ayrinti icin baglantiya bakin.\" yaz. Dogrulanmamis iddialari kesin bilgi gibi sunma. 4) top3: gunun en onemli 3 gelismesini birer kisa Turkce cumle olarak yaz. 5) alert: ozellikle dikkat edilmesi gereken bir gelisme varsa kisa Turkce uyari, yoksa bos string. Sadece listedeki id degerlerini kullan; link veya tarih uretme. Bos liste verilirse items, top3 bos dizi olsun."
+            },
+            {
+              "content": "=Bugun: {{ $json.runDate }} (Europe/Istanbul). Zaman penceresi: {{ $json.windowUsed }}.\nAday haberler:\n{{ JSON.stringify($json.items) }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 12000,
+          "reasoning": {
+            "reasoningOptions": {
+              "effort": "low",
+              "summary": "none"
+            }
+          },
+          "textFormat": {
+            "textOptions": {
+              "type": "json_schema",
+              "name": "news_digest",
+              "schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"top3\",\"alert\",\"items\"],\"properties\":{\"top3\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"alert\":{\"type\":\"string\"},\"items\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"id\",\"merged_ids\",\"title_tr\",\"summary_tr\",\"why_important\",\"use_case\",\"category\",\"importance\"],\"properties\":{\"id\":{\"type\":\"string\"},\"merged_ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"title_tr\":{\"type\":\"string\"},\"summary_tr\":{\"type\":\"string\"},\"why_important\":{\"type\":\"string\"},\"use_case\":{\"type\":\"string\"},\"category\":{\"type\":\"string\"},\"importance\":{\"type\":\"integer\"}}}}}}",
+              "strict": true
+            }
+          }
+        }
+      },
+      "id": "29c6e5a2-6c9e-4dbe-bc9e-8fef62b6b0bb",
+      "name": "Summarize News (TR)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        1168,
+        128
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "id": "07dd6b0d-0149-451c-8888-c879435bd170",
+      "name": "Combine News and Jobs",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1024,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "S = []\nS.append({\"source\": \"Remotive\", \"type\": \"remotive\", \"url\": \"https://remotive.com/api/remote-jobs?category=software-dev&limit=200\"})\nS.append({\"source\": \"Remotive\", \"type\": \"remotive\", \"url\": \"https://remotive.com/api/remote-jobs?category=data&limit=200\"})\nS.append({\"source\": \"Arbeitnow\", \"type\": \"arbeitnow\", \"url\": \"https://www.arbeitnow.com/api/job-board-api?page=1\"})\nS.append({\"source\": \"Arbeitnow\", \"type\": \"arbeitnow\", \"url\": \"https://www.arbeitnow.com/api/job-board-api?page=2\"})\nS.append({\"source\": \"Jobicy\", \"type\": \"jobicy\", \"url\": \"https://jobicy.com/api/v2/remote-jobs?count=50&geo=turkiye\"})\nS.append({\"source\": \"Jobicy\", \"type\": \"jobicy\", \"url\": \"https://jobicy.com/api/v2/remote-jobs?count=50&industry=data-science\"})\n\n# quote() yerine elle kodlanmış sorgular (boşluk = %20)\nhimalayas_queries = [\"machine%20learning\", \"artificial%20intelligence\", \"data%20scientist\", \"deep%20learning\", \"computer%20vision\", \"nlp\", \"llm\", \"python\", \"intern\", \"junior\", \"yapay%20zeka\"]\nfor q in himalayas_queries:\n    S.append({\"source\": \"Himalayas\", \"type\": \"himalayas\", \"url\": \"https://himalayas.app/jobs/api/search?country=TR&q=\" + q})\n\nlever_boards = [[\"Trendyol\", \"trendyol\"], [\"Insider\", \"insiderone\"], [\"Dream Games\", \"dreamgames\"], [\"Peak\", \"peakgames\"]]\nfor c in lever_boards:\n    S.append({\"source\": c[0] + \" Kariyer\", \"company\": c[0], \"type\": \"lever\", \"url\": \"https://api.lever.co/v0/postings/\" + c[1] + \"?mode=json\"})\n\nreturn [{\"json\": s} for s in S]"
+      },
+      "id": "397a6f66-98bb-4b62-8885-ecf0d5224816",
+      "name": "Job Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "24c3c4a4-2e24-4d60-8687-d08654e295a6",
+      "name": "Fetch Job APIs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        720,
+        320
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const H = 3600 * 1000;\nconst nowMs = Date.now();\nconst srcs = $('Job Sources').all().map(i => i.json);\nlet sent = new Set();\ntry { sent = new Set($('Load Sent History1').all().map(i => i.json.item_key).filter(Boolean)); } catch (e) {}\n\nfunction decode(s) { return String(s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '\"').replace(/&#39;/g, \"'\").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&'); }\nfunction strip(s) { return decode(decode(s).replace(/<[^>]*>/g, ' ')).replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim(); }\nfunction normLink(u) { return String(u || '').toLowerCase().replace(/^https?:\\/\\//, '').replace(/^www\\./, '').split('#')[0].split('?')[0].replace(/\\/+$/, ''); }\nfunction normText(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9çğıöşü]+/g, ' ').trim(); }\nfunction arr(v) { return Array.isArray(v) ? v : (v ? [v] : []); }\n\n// English + Turkish role keywords\nconst roleRe = /(\\bai\\b|\\ba\\.i\\.|artificial intelligence|machine learning|machine-learning|\\bml\\b|deep learning|data scien|computer vision|\\bnlp\\b|natural language|\\bllm|generative|gen ?ai|ai agent|ai engineer|automation engineer|research engineer|research intern|mlops|ki-|künstliche intelligenz|yapay zek|makine öğren|derin öğren|veri bilim|görüntü işleme|doğal dil)/i;\nconst pyRe = /python/i;\nconst mlCtx = /(machine learning|\\bml\\b|\\bai\\b|deep learning|pytorch|tensorflow|llm|data scien|computer vision|nlp|yapay zek|makine öğren)/i;\nconst trRe = /(turkey|türkiye|turkiye|istanbul|İstanbul|ankara|izmir|İzmir|kocaeli|bursa|antalya|eskişehir|eskisehir|konya|kayseri|gebze)/i;\nconst trRemoteRe = /(worldwide|anywhere|global|turkey|türkiye|turkiye|emea|europe)/i;\n\nfunction level(title, types) {\n  const t = (title + ' ' + types).toLowerCase();\n  if (/(\\bintern\\b|internship|praktikum|praktikant|stajyer|\\bstaj\\b|stagiaire|trainee|\\bstage\\b)/.test(t)) return 'Internship';\n  if (/(werkstudent|working student|part[_ -]?time|teilzeit|yarı zamanlı)/.test(t)) return 'Part-time';\n  if (/(new grad|graduate|absolvent|entry-level|entry level|yeni mezun)/.test(t)) return 'New Graduate';\n  if (/(junior|jr\\.?\\b|associate)/.test(t)) return 'Junior';\n  if (/(senior|sr\\.?\\b|lead|principal|staff|head of|director|manager|architect|kıdemli)/.test(t)) return 'Senior';\n  return 'Mid / Belirtilmemis';\n}\n\nconst sourceErrors = [];\nconst okSources = new Set();\nconst stats = {};\nfunction stat(name) { if (!stats[name]) stats[name] = { fetched: 0, matched: 0, picked: 0 }; return stats[name]; }\nconst raw = [];\nfunction add(r) { raw.push(r); stat(r.source).fetched++; }\n\n$input.all().forEach(it => {\n  const j = it.json || {};\n  const idx = it.pairedItem && typeof it.pairedItem.item === 'number' ? it.pairedItem.item : -1;\n  const s = srcs[idx] || {};\n  const leverNames = { trendyol: 'Trendyol', insiderone: 'Insider', dreamgames: 'Dream Games', peakgames: 'Peak' };\n  const isLever = !!(j.text && j.hostedUrl);\n  const type = isLever ? 'lever' : (s.type || (Array.isArray(j.data) ? 'arbeitnow' : 'remotive'));\n  const leverSlug = isLever ? (String(j.hostedUrl).split('jobs.lever.co/')[1] || '').split('/')[0] : '';\n  const leverCo = leverNames[leverSlug] || leverSlug;\n  const name = isLever ? leverCo + ' Kariyer' : (s.source || type);\n  if (j.error) { sourceErrors.push(name + ': ' + String(j.error.message || j.error).slice(0, 120)); return; }\n  if (type === 'lever') {\n    if (!j.text || !j.hostedUrl) return;\n    okSources.add(name);\n    const c = j.categories || {};\n    const locs = arr(c.allLocations).length ? arr(c.allLocations).join(' / ') : (c.location || 'belirtilmemis');\n    add({\n      source: name, title: j.text, company: leverCo, url: j.hostedUrl, geo: locs,\n      location: locs + (j.workplaceType === 'remote' ? ' / Remote' : (j.workplaceType === 'hybrid' ? ' / Hibrit' : '')),\n      remote: j.workplaceType === 'remote', trRemote: false, types: String(c.commitment || ''),\n      ms: Number(j.createdAt), desc: j.descriptionPlain || j.description, tags: String(c.team || ''), salary: '', maxAgeDays: 90,\n    });\n  } else if (type === 'himalayas' && Array.isArray(j.jobs)) {\n    okSources.add(name);\n    j.jobs.forEach(x => {\n      const restr = arr(x.locationRestrictions);\n      const openTr = restr.length === 0 || restr.indexOf('Turkey') >= 0;\n      const loc = restr.length === 0 ? 'Remote (Dünya geneli)' : (restr.indexOf('Turkey') >= 0 ? 'Remote (Türkiye dahil)' : 'Remote (' + restr.slice(0, 3).join(', ') + ')');\n      add({\n        source: name, title: x.title, company: x.companyName, url: x.applicationLink || x.guid,\n        location: loc, remote: true, trRemote: openTr,\n        types: arr(x.seniority).join(', ') + (x.employmentType ? ', ' + x.employmentType : ''),\n        ms: x.pubDate ? Number(x.pubDate) * 1000 : NaN, desc: x.description || x.excerpt, tags: arr(x.categories).slice(0, 5).join(', '), salary: '', maxAgeDays: 14,\n      });\n    });\n  } else if (type === 'jobicy' && Array.isArray(j.jobs)) {\n    okSources.add(name);\n    j.jobs.forEach(x => add({\n      source: name, title: x.jobTitle, company: x.companyName, url: x.url,\n      location: 'Remote (' + (x.jobGeo || 'belirtilmemis') + ')', remote: true, trRemote: trRemoteRe.test(String(x.jobGeo || '')),\n      types: String(x.jobLevel || '') + ', ' + arr(x.jobType).join(', '),\n      ms: Date.parse(x.pubDate || ''), desc: x.jobDescription || x.jobExcerpt, tags: arr(x.jobIndustry).join(', '), salary: '', maxAgeDays: 14,\n    }));\n  } else if (type === 'arbeitnow' && Array.isArray(j.data)) {\n    okSources.add(name);\n    j.data.forEach(x => add({\n      source: name, title: x.title, company: x.company_name, url: x.url, geo: x.location || '',\n      location: (x.location || 'belirtilmemis') + (x.remote ? ' / Remote' : ''),\n      remote: !!x.remote, trRemote: false, types: arr(x.job_types).join(', '),\n      ms: x.created_at ? Number(x.created_at) * 1000 : NaN, desc: x.description, tags: arr(x.tags).join(', '), salary: '', maxAgeDays: 14,\n    }));\n  } else if (Array.isArray(j.jobs)) {\n    okSources.add(name);\n    j.jobs.forEach(x => add({\n      source: name, title: x.title, company: x.company_name, url: x.url,\n      location: 'Remote (' + (x.candidate_required_location || 'belirtilmemis') + ')',\n      remote: true, trRemote: trRemoteRe.test(String(x.candidate_required_location || '')), types: String(x.job_type || ''),\n      ms: Date.parse(x.publication_date || ''), desc: x.description, tags: arr(x.tags).join(', '), salary: x.salary || '', maxAgeDays: 14,\n    }));\n  }\n});\n\nconst seen = new Set();\nconst out = [];\nraw.forEach(r => {\n  if (!r.title || !r.url) return;\n  const desc = strip(r.desc);\n  const isRole = roleRe.test(r.title) || (pyRe.test(r.title) && mlCtx.test(desc.slice(0, 3000)));\n  if (!isRole) return;\n  const hasDate = !isNaN(r.ms) && r.ms > 0;\n  const ageH = hasDate ? (nowMs - r.ms) / H : null;\n  if (hasDate && ageH > 24 * r.maxAgeDays) return;\n  const key = normLink(r.url);\n  const dupKey = normText(r.title) + '|' + normText(r.company);\n  if (sent.has(key) || seen.has(key) || seen.has(dupKey)) return;\n  seen.add(key); seen.add(dupKey);\n  const lvl = level(r.title, r.types);\n  const inTr = trRe.test(r.geo || '');\n  const entry = ['Internship', 'Part-time', 'New Graduate', 'Junior'].includes(lvl);\n  // Priority: 1) Turkey + entry level, 2) Turkey AI/ML, 3) remote open to Turkey, 4) international\n  let score = 0;\n  if (inTr) score += 150; else if (r.trRemote) score += 50;\n  if (entry) score += 40;\n  if (lvl === 'Senior') score -= 30;\n  if (hasDate && ageH <= 72) score += 10;\n  if (/\\b(usa|us only|united states|canada)\\b/i.test(r.location)) score -= 15;\n  stat(r.source).matched++;\n  out.push({\n    source: r.source, title: strip(r.title), company: r.company || 'Belirtilmemis', location: r.location,\n    link: r.url, key: key, level: lvl, jobType: r.types, salary: r.salary,\n    published: hasDate ? DateTime.fromMillis(r.ms).setZone('Europe/Istanbul').toFormat('yyyy-MM-dd') : 'Tarih dogrulanamadi',\n    ageHours: hasDate ? Math.round(ageH) : null,\n    turkey: inTr, turkeyRemote: !inTr && !!r.trRemote, priority: inTr && entry ? 1 : (inTr ? 2 : (r.trRemote ? 3 : 4)),\n    score: score, tags: r.tags,\n    snippet: desc.slice(0, 700),\n  });\n});\nout.sort((a, b) => (b.score - a.score) || ((a.ageHours === null ? 99999 : a.ageHours) - (b.ageHours === null ? 99999 : b.ageHours)));\nlet seniors = 0;\nconst picked = [];\nout.forEach(x => {\n  if (picked.length >= 25) return;\n  if (x.level === 'Senior') { if (seniors >= 4) return; seniors++; }\n  picked.push(x);\n  stat(x.source).picked++;\n});\nconst items = picked.map((x, i) => Object.assign({ id: 'J' + (i + 1) }, x));\nreturn [{ json: {\n  fetchedCount: raw.length,\n  matchedCount: out.length,\n  items: items,\n  sourceStats: stats,\n  okSources: Array.from(okSources),\n  sourceErrors: sourceErrors,\n} }];"
+      },
+      "id": "6ab8cb24-dce0-467d-a4ae-1c6b5a4518b9",
+      "name": "Prepare Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        944,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5.4-mini",
+          "cachedResultName": "GPT-5.4-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Sen bir teknik ise alim asistanisin. Sana is ilanlari JSON olarak verilecek (id, title, company, location, level, jobType, snippet). Her ilan icin YALNIZCA verilen metne dayanarak: relevant (ilan gercekten AI/ML, Data Science, CV, NLP, LLM, GenAI, AI Agent, AI otomasyon, AI odakli Python veya AI arastirma/staj pozisyonu mu? degilse false), skills (metinde gecen en fazla 6 temel teknik beceri, ornek: Python, PyTorch, LLM, SQL), requirements_tr (varsa onemli basvuru sartlarini Turkce tek kisa cumleyle: deneyim yili, dil, vize/lokasyon kisiti, son basvuru tarihi; yoksa bos string), level (Internship, Part-time, Junior, New Graduate, Mid, Senior veya Belirtilmemis). alert: dikkat edilmesi gereken son basvuru tarihi veya ozel bir firsat varsa kisa Turkce uyari, yoksa bos string. Bilgi uydurma, link veya tarih uretme. Bos liste verilirse jobs bos dizi olsun."
+            },
+            {
+              "content": "=Ilanlar:\n{{ JSON.stringify($json.items.map(x => ({ id: x.id, title: x.title, company: x.company, location: x.location, level: x.level, jobType: x.jobType, snippet: x.snippet }))) }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 10000,
+          "reasoning": {
+            "reasoningOptions": {
+              "effort": "low",
+              "summary": "none"
+            }
+          },
+          "textFormat": {
+            "textOptions": {
+              "type": "json_schema",
+              "name": "job_digest",
+              "schema": "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"alert\",\"jobs\"],\"properties\":{\"alert\":{\"type\":\"string\"},\"jobs\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"id\",\"relevant\",\"skills\",\"requirements_tr\",\"level\"],\"properties\":{\"id\":{\"type\":\"string\"},\"relevant\":{\"type\":\"boolean\"},\"skills\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"requirements_tr\":{\"type\":\"string\"},\"level\":{\"type\":\"string\"}}}}}}",
+              "strict": true
+            }
+          }
+        }
+      },
+      "id": "6f29d204-7515-4429-b4ca-ebec21cd65ce",
+      "name": "Analyze Jobs (TR)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        1168,
+        320
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "function safe(fn, d) { try { const v = fn(); return (v === undefined || v === null) ? d : v; } catch (e) { return d; } }\nfunction esc(s) { return String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;'); }\nfunction aiOut(name) {\n  return safe(() => {\n    const j = $(name).first().json;\n    if (!j || j.error || !Array.isArray(j.output)) return null;\n    const msg = j.output.find(o => o.type === 'message') || j.output[0];\n    let t = msg.content[0].text;\n    if (typeof t === 'string') t = JSON.parse(t);\n    return t;\n  }, null);\n}\nconst runDate = $now.setZone('Europe/Istanbul').toFormat('yyyy-MM-dd');\nconst news = safe(() => $('Prepare News').first().json, { items: [], sourceErrors: ['Haber akisi calismadi'], okSources: [] });\nconst jobs = safe(() => $('Prepare Jobs').first().json, { items: [], sourceErrors: ['Ilan akisi calismadi'], okSources: [] });\nconst newsAi = aiOut('Summarize News (TR)');\nconst jobsAi = aiOut('Analyze Jobs (TR)');\nconst notes = [];\nconst sentRows = [];\n\n\n\n// ---- News ----\nconst newsById = {};\n(news.items || []).forEach(n => { newsById[n.id] = n; });\nlet newsList = [];\nif (newsAi && Array.isArray(newsAi.items) && newsAi.items.some(a => newsById[a.id])) {\n  newsList = newsAi.items.filter(a => newsById[a.id]).sort((a, b) => (b.importance || 0) - (a.importance || 0)).slice(0, 10).map(a => {\n    const n = newsById[a.id];\n    sentRows.push({ item_key: n.key, item_type: 'news', title: n.title.slice(0, 250) });\n    (a.merged_ids || []).forEach(m => { if (newsById[m]) sentRows.push({ item_key: newsById[m].key, item_type: 'news', title: newsById[m].title.slice(0, 250) }); });\n    return { title: a.title_tr || n.title, orig: n.title, source: n.source, published: n.published, ageHours: n.ageHours, summary: a.summary_tr, why: a.why_important, use: a.use_case, cat: a.category, link: n.link };\n  });\n} else if ((news.items || []).length) {\n  notes.push('AI ozetleme adimi calismadi; haberler ozetsiz, orijinal basliklariyla listelendi.');\n  newsList = news.items.slice(0, 10).map(n => {\n    sentRows.push({ item_key: n.key, item_type: 'news', title: n.title.slice(0, 250) });\n    return { title: n.title, orig: '', source: n.source, published: n.published, ageHours: n.ageHours, summary: 'AI ozeti uretilemedi. Kaynak aciklamasi: ' + (n.snippet || 'yok').slice(0, 250), why: '', use: '', cat: '', link: n.link };\n  });\n}\n\n// ---- Jobs ----\nconst jobById = {};\n(jobs.items || []).forEach(j => { jobById[j.id] = j; });\nlet jobList = [];\nconst aiJobMap = {};\nif (jobsAi && Array.isArray(jobsAi.jobs)) jobsAi.jobs.forEach(a => { aiJobMap[a.id] = a; });\nelse if ((jobs.items || []).length) notes.push('AI ilan analizi calismadi; beceri ve sart alanlari bos birakildi.');\n(jobs.items || []).forEach(j => {\n  const a = aiJobMap[j.id];\n  if (a && a.relevant === false) return;\n  sentRows.push({ item_key: j.key, item_type: 'job', title: (j.title + ' @ ' + j.company).slice(0, 250) });\n  jobList.push({ title: j.title, company: j.company, location: j.location, published: j.published, ageHours: j.ageHours, level: (a && a.level) || j.level, skills: (a && a.skills) || [], req: (a && a.requirements_tr) || '', link: j.link, source: j.source, turkey: j.turkey });\n});\nif (!jobList.some(j => j.turkey)) notes.push('Bugun kullanilan kaynaklarda Turkiye lokasyonlu yeni ilan bulunamadi (Remotive ve Arbeitnow agirlikli olarak uzaktan/Avrupa ilanlari icerir).');\n\n// ---- HTML ----\nconst C = { wrap: 'max-width:640px;margin:0 auto;font-family:Arial,Helvetica,sans-serif;color:#1f2937;line-height:1.5;font-size:15px;', h2: 'font-size:19px;margin:28px 0 10px;padding-bottom:6px;border-bottom:2px solid #4f46e5;color:#111827;', card: 'border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin:0 0 12px;background:#ffffff;', meta: 'font-size:12px;color:#6b7280;margin:2px 0 8px;', a: 'color:#4f46e5;font-weight:bold;text-decoration:none;', small: 'font-size:13px;margin:4px 0;' };\nfunction age(h) { if (h === null || h === undefined) return ''; if (h < 24) return ' (' + h + ' saat once)'; return ' (' + Math.round(h / 24) + ' gun once)'; }\nconst P = [];\nP.push('<div style=\"background:#f3f4f6;padding:12px 8px;\"><div style=\"' + C.wrap + '\">');\nP.push('<div style=\"background:#4f46e5;color:#fff;border-radius:10px;padding:16px;\"><div style=\"font-size:22px;font-weight:bold;\">AI Daily Digest</div><div style=\"font-size:13px;opacity:.9;\">' + esc(runDate) + ' &middot; Europe/Istanbul</div></div>');\n\n// Daily summary\nconst top3 = (newsAi && Array.isArray(newsAi.top3) && newsAi.top3.length) ? newsAi.top3.slice(0, 3) : newsList.slice(0, 3).map(n => n.title);\nP.push('<div style=\"' + C.card + 'margin-top:12px;\"><div style=\"font-weight:bold;margin-bottom:6px;\">Gunun Ozeti</div>');\nif (top3.length) { P.push('<ol style=\"margin:0 0 8px 18px;padding:0;\">'); top3.forEach(t => P.push('<li style=\"' + C.small + '\">' + esc(t) + '</li>')); P.push('</ol>'); }\nelse P.push('<div style=\"' + C.small + '\">Bugun one cikan yeni bir AI gelismesi bulunamadi.</div>');\nP.push('<div style=\"' + C.small + '\"><b>Haber sayisi:</b> ' + newsList.length + ' &middot; <b>Yeni AI is firsati:</b> ' + jobList.length + ' (Staj/Junior/Part-time: ' + jobList.filter(j => ['Internship', 'Part-time', 'Junior', 'New Graduate'].includes(j.level)).length + ')</div>');\nconst alerts = [newsAi && newsAi.alert, jobsAi && jobsAi.alert].filter(x => x && String(x).trim());\nalerts.forEach(al => P.push('<div style=\"background:#fef3c7;border-radius:6px;padding:8px;margin-top:6px;font-size:13px;\"><b>Uyari:</b> ' + esc(al) + '</div>'));\nP.push('</div>');\n\n// Section 1\nP.push('<h2 style=\"' + C.h2 + '\">Bolum 1 &mdash; Gunun Yapay Zeka Gundemi</h2>');\nif (news.windowUsed === '7 gun' && newsList.length) P.push('<div style=\"' + C.meta + '\">Son 72 saatte yeterli haber olmadigi icin son 7 gun degerlendirildi; yayin tarihlerine dikkat edin.</div>');\nif (!newsList.length) P.push('<div style=\"' + C.card + '\">Bugun kaynaklarda yeni ve daha once gonderilmemis AI haberi bulunamadi.</div>');\nnewsList.forEach((n, i) => {\n  P.push('<div style=\"' + C.card + '\"><div style=\"font-weight:bold;font-size:16px;\">' + (i + 1) + '. ' + esc(n.title) + '</div>');\n  P.push('<div style=\"' + C.meta + '\">' + esc(n.source) + ' &middot; ' + esc(n.published) + esc(age(n.ageHours)) + (n.cat ? ' &middot; ' + esc(n.cat) : '') + '</div>');\n  if (n.orig && n.orig !== n.title) P.push('<div style=\"' + C.meta + '\">Orijinal baslik: ' + esc(n.orig) + '</div>');\n  if (n.summary) P.push('<div style=\"' + C.small + '\">' + esc(n.summary) + '</div>');\n  if (n.why) P.push('<div style=\"' + C.small + '\"><b>Neden onemli:</b> ' + esc(n.why) + '</div>');\n  if (n.use) P.push('<div style=\"' + C.small + '\"><b>Kullanim alani:</b> ' + esc(n.use) + '</div>');\n  P.push('<div style=\"margin-top:8px;\"><a style=\"' + C.a + '\" href=\"' + esc(n.link) + '\">Kaynaga git &rarr;</a></div></div>');\n});\n\n// Section 2\nP.push('<h2 style=\"' + C.h2 + '\">Bolum 2 &mdash; Yeni AI Is Firsatlari</h2>');\nif (!jobList.length) P.push('<div style=\"' + C.card + '\">Bugun kriterlere uyan yeni ve daha once gonderilmemis ilan bulunamadi.</div>');\njobList.forEach((j, i) => {\n  P.push('<div style=\"' + C.card + '\"><div style=\"font-weight:bold;font-size:16px;\">' + (i + 1) + '. ' + esc(j.title) + '</div>');\n  P.push('<div style=\"' + C.meta + '\">' + esc(j.company) + ' &middot; ' + esc(j.location) + '</div>');\n  P.push('<div style=\"' + C.small + '\"><b>Yayin:</b> ' + esc(j.published) + esc(age(j.ageHours)) + ' &middot; <b>Seviye:</b> ' + esc(j.level) + ' &middot; <b>Kaynak:</b> ' + esc(j.source) + '</div>');\n  if (j.skills.length) P.push('<div style=\"' + C.small + '\"><b>Beceriler:</b> ' + esc(j.skills.join(', ')) + '</div>');\n  if (j.req) P.push('<div style=\"' + C.small + '\"><b>Onemli sartlar:</b> ' + esc(j.req) + '</div>');\n  P.push('<div style=\"margin-top:8px;\"><a style=\"' + C.a + '\" href=\"' + esc(j.link) + '\">Ilana / basvuruya git &rarr;</a></div></div>');\n});\n\n// Footer\nconst errs = (news.sourceErrors || []).concat(jobs.sourceErrors || []);\nP.push('<div style=\"font-size:12px;color:#6b7280;margin-top:20px;\">');\nP.push('<div><b>Calisan kaynaklar:</b> ' + esc((news.okSources || []).concat(jobs.okSources || []).join(', ') || 'yok') + '</div>');\nif (errs.length) P.push('<div style=\"color:#b91c1c;\"><b>Hata veren kaynaklar:</b> ' + esc(errs.join(' | ')) + '</div>');\nnotes.forEach(n => P.push('<div>' + esc(n) + '</div>'));\nP.push('<div>Ozetler yalnizca RSS/ilan metnine dayanir; ayrintilar icin orijinal kaynaga bakin. Ilan kaynaklari: Remotive, Arbeitnow, Jobicy, Himalayas ve sirketlerin acik kariyer sayfalari (Lever). LinkedIn ve Kariyer.net acik API sunmadigi icin dahil degildir.</div>');\nP.push('</div></div></div>');\n\nreturn [{ json: {\n  runDate: runDate,\n  subject: 'AI Daily Digest | ' + runDate,\n  html: P.join(''),\n  newsCount: newsList.length,\n  jobCount: jobList.length,\n  sentRows: sentRows,\n} }];"
+      },
+      "id": "dd33a249-809d-4ad8-b597-2d02c930b0a3",
+      "name": "Build HTML Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "berfinhazar05@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "AI Daily Digest"
+        }
+      },
+      "id": "64d55f46-ecf1-40dd-8cd6-4996c69ceb49",
+      "name": "Send Digest Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1472,
+        224
+      ],
+      "executeOnce": true,
+      "webhookId": "6c9ae7df-f27b-4069-b19c-4ce2441bc850",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Y0aAkiowWlEyQou5",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "b = _items[0][\"json\"]\n\nreturn [\n    {\"json\": {\n        \"item_key\": r[\"item_key\"],\n        \"item_type\": r[\"item_type\"],\n        \"title\": r[\"title\"],\n        \"sent_date\": b[\"runDate\"],\n    }}\n    for r in (b.get(\"sentRows\") or [])\n]"
+      },
+      "id": "2a83e770-d9ca-4d10-a2aa-a90fca757094",
+      "name": "Prepare History Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1696,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "FWEL3sJdldWXUbN2",
+          "cachedResultName": "ai_digest_sent_items"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "item_key": "={{ $json.item_key }}",
+            "item_type": "={{ $json.item_type }}",
+            "title": "={{ $json.title }}",
+            "sent_date": "={{ $json.sent_date }}"
+          },
+          "schema": [
+            {
+              "id": "item_key",
+              "displayName": "item_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "item_type",
+              "displayName": "item_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sent_date",
+              "displayName": "sent_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {
+          "optimizeBulk": true
+        }
+      },
+      "id": "da15e2dc-d8ad-4d4e-8dd4-7942b15bfe15",
+      "name": "Save Sent History",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1920,
+        224
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily 08:00 Istanbul": {
+      "main": [
+        [
+          {
+            "node": "Load Sent History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Sent History": {
+      "main": [
+        [
+          {
+            "node": "News Sources",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Job Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Test Run": {
+      "main": [
+        [
+          {
+            "node": "Load Sent History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "News Sources": {
+      "main": [
+        [
+          {
+            "node": "Read AI News Feeds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read AI News Feeds": {
+      "main": [
+        [
+          {
+            "node": "Prepare News",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare News": {
+      "main": [
+        [
+          {
+            "node": "Summarize News (TR)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize News (TR)": {
+      "main": [
+        [
+          {
+            "node": "Combine News and Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine News and Jobs": {
+      "main": [
+        [
+          {
+            "node": "Build HTML Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Job Sources": {
+      "main": [
+        [
+          {
+            "node": "Fetch Job APIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Job APIs": {
+      "main": [
+        [
+          {
+            "node": "Prepare Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Jobs": {
+      "main": [
+        [
+          {
+            "node": "Analyze Jobs (TR)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Jobs (TR)": {
+      "main": [
+        [
+          {
+            "node": "Combine News and Jobs",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build HTML Email": {
+      "main": [
+        [
+          {
+            "node": "Send Digest Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Digest Email": {
+      "main": [
+        [
+          {
+            "node": "Prepare History Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare History Rows": {
+      "main": [
+        [
+          {
+            "node": "Save Sent History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "c6db0106-fcd5-4ea3-9a3a-105f683bb030",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "0be445e8b3d11d52127f5325539fc84a0e1f48f23ffcce064b4d19cd5029bf81"
+  },
+  "nodeGroups": [
+    {
+      "id": "291ded04-c2cc-4750-a055-5092488e3354",
+      "name": "AI Haberleri",
+      "nodeIds": [
+        "ba31be69-fb84-43ec-86b1-7f45253bbf91",
+        "ad7b70ed-2206-4d7e-b7f8-7d399916e13a",
+        "3d9ba279-6770-410c-b83e-13d3dc80ec35",
+        "29c6e5a2-6c9e-4dbe-bc9e-8fef62b6b0bb"
+      ],
+      "description": "Reads official AI blogs and arXiv, keeps fresh unseen items, then writes Turkish summaries ranked by importance"
+    },
+    {
+      "id": "2200f662-fa3a-4254-8dfb-8919382124b2",
+      "name": "İş İlanları",
+      "nodeIds": [
+        "397a6f66-98bb-4b62-8885-ecf0d5224816",
+        "24c3c4a4-2e24-4d60-8687-d08654e295a6",
+        "6ab8cb24-dce0-467d-a4ae-1c6b5a4518b9",
+        "6f29d204-7515-4429-b4ca-ebec21cd65ce"
+      ],
+      "description": "Pulls free remote and EU job boards, keeps AI/ML roles favoring intern and junior levels, extracts key skills"
+    }
+  ],
+  "id": "cODXRMDzEdcuBFnP",
+  "tags": []
+}
